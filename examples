@@ -1,0 +1,28 @@
+SELECT 
+#Extract only the month number from the column date_purchase
+EXTRACT(MONTH FROM date_purchase) AS month
+#Change the priority name to add numbers in front so there's a possibility to order it
+, CASE
+  WHEN priority = 'High' THEN '1 - High'
+  WHEN priority = 'Medium' THEN '2 - Medium'
+  ELSE '3 - Low'
+END AS priority
+, transporter
+#Average date difference in days between the purchase and delivery rounded to one decimal place
+, ROUND(AVG(DATE_DIFF(date_delivery, date_purchase, DAY)),1) AS avg_delivery_time
+#Shortest time for delivery
+, MIN(DATE_DIFF(date_delivery, date_purchase, DAY)) AS shortest_time
+#Longest time for delivery
+, MAX(DATE_DIFF(date_delivery, date_purchase, DAY)) AS longest_time
+#Column parcel_id is PK, count them to determine the total number of parcels
+, COUNT(parcel_id) AS nb_parcels
+#Sum column quantity to get total number of products
+, SUM(qty) AS nb_products
+#Divide number of products per total parcels to get products per parcel
+, ROUND(SUM(qty)/COUNT(parcel_id),1) AS products_per_parcel
+FROM `e-tensor-411113.course15.circle_parcel_ok`
+JOIN `e-tensor-411113.course15.circle_parcel_product`
+USING(parcel_id)
+WHERE date_delivery IS NOT NULL
+GROUP BY transporter, priority, month
+ORDER BY month, priority, transporter
