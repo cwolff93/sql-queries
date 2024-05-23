@@ -1,4 +1,4 @@
---Stats about delivery times and transporters--
+  --Stats about delivery times and transporters--
 
 SELECT 
 --Extract only the month number from the column date_purchase
@@ -29,9 +29,9 @@ WHERE date_delivery IS NOT NULL
 GROUP BY transporter, priority, month
 ORDER BY month, priority, transporter
 
----------
+-------
   
---Saving query over original table to delete duplicates--
+  --Saving query over original table to delete duplicates--
 
 --Create CTE to add a row number partitioned by customer_unique_id
 WITH
@@ -55,7 +55,8 @@ WHERE
 
 -------
 
---Retention check for joins--
+  --Retention check for joins--
+  
 --By filtering orders_id for null values, you only get results from table B (ship)
 
 SELECT *
@@ -66,7 +67,7 @@ WHERE orders_op.orders_id IS NULL
 
 -------
 
---Create CTE to calculate total turnover and total promotion value offered, both rounded to 2 decimal places
+  --Create CTE to calculate total turnover and total promotion value offered, both rounded to 2 decimal places
 
 WITH margin_metrics AS(
   SELECT
@@ -89,7 +90,8 @@ SELECT orders_id
 , CASE
 --Selecting any promo_name that contain the caracters "dlc" somewhere in them with a LOWER to make sure it's uniform
     WHEN LOWER(promo_name) LIKE '%dlc%' then 'short-lived'
---Divide promo options between low and high depending on the promo percentage each product had. Under 10% for low promotions, above 30% for high promotions as long as it doesn't contain "dlc" in its promo_name
+--Divide promo options into low and high depending on the promo percentage each product had. 
+--Under 10% for low promotions, above 30% for high promotions as long as it doesn't contain "dlc" in its promo_name
     WHEN ROUND(SAFE_DIVIDE(promo_value, turnover),2) < 0.1 then 'Low Promo'
     WHEN ROUND(SAFE_DIVIDE(promo_value, turnover),2) >= 0.30 AND NOT LOWER(promo_name) LIKE '%dlc%' then 'High Promo'
     ELSE 'Medium Promo'
@@ -97,7 +99,8 @@ END AS promo_type
 FROM margin_metrics
 
 -------
--- Creating functions for margin percent and promotion percent and then calling them in a query
+
+  -- Creating functions for margin percent and promotion percent and then calling them in a query
 
 --Parameters are turnover and purchase_cost as floats
 CREATE FUNCTION course17.margin_percent (turnover FLOAT64, purchase_cost FLOAT64) AS (
@@ -122,3 +125,82 @@ CREATE FUNCTION course17.margin_percent (turnover FLOAT64, purchase_cost FLOAT64
      ,course17.margin_percent(turnover, purchase_cost) AS margin_percent
      ,course17.promo_percent (turnover, turnover_before_promo) AS promo_percent
    FROM `course17.gwz_sales_17`;
+
+-------
+
+  -- KPI Funnel statistics
+
+-- Create CTE to make create all definitions and calculate the time it takes between stages
+WITH funnel_times AS(
+  SELECT *
+,CASE
+  -- date_lead -> date_opportunity -> date_customer | date_lost
+  -- if the lead has become a customer and was not lost
+  WHEN date_lost IS NOT NULL THEN 0
+  WHEN date_customer IS NOT NULL THEN 1
+  ELSE NULL
+END AS lead2customer
+,CASE
+  -- if the lead has become an opportunity and was not lost
+  WHEN date_lost IS NOT NULL THEN 0
+  WHEN date_opportunity IS NOT NULL THEN 1
+  ELSE NULL
+END AS lead2opportunity
+,CASE
+  -- if the opportunity became a customer and was not lost and isn't just an opportunity anymore
+  WHEN date_lost IS NOT NULL AND date_opportunity IS NOT NULL THEN 0
+  WHEN date_customer IS NOT NULL THEN 1
+  ELSE NULL
+END AS opportunity2customer
+, DATE_DIFF(date_customer, date_lead, DAY) AS lead2customer_time
+, DATE_DIFF(date_opportunity, date_lead, DAY) AS lead2opportunity_time
+, DATE_DIFF(date_customer, date_opportunity, DAY) AS opportunity2customer_time
+FROM `e-tensor-411113.course15.cc_funnel_kpi`)
+
+SELECT 
+  -- extract the month from lead date to have a reference in a different granularity, comparing results between months
+  EXTRACT(MONTH FROM date_lead) AS month_lead
+, COUNT(*) AS nb_prospects
+, COUNT(date_customer) AS nb_customers
+-- rates
+  -- By adding all lead2customers, I'm counting the amount of customers I have. If I average that value I'll divide by total leads, which gives me a rate of conversion. Same applies to other stages.
+, ROUND(AVG(lead2customer)*100,1) AS lead2customer_rate
+, ROUND(AVG(lead2opportunity)*100,1) AS lead2opportunity_rate
+, ROUND(AVG(opportunity2customer)*100,1) AS opportunity2customer_rate
+-- times
+, ROUND(AVG(lead2customer_time),2) AS lead2customer_time
+, ROUND(AVG(lead2opportunity_time),2) AS lead2opportunity_time
+, ROUND(AVG(opportunity2customer_time),2) AS opportunity2customer_time
+FROM funnel_times
+-- to be able to do aggregations
+GROUP BY month_lead
+-- to see the results by ascending order for months
+ORDER BY month_lead
+
+-------
+
+  -- Check if payment entries are repeated  
+
+WITH
+  rn_delete AS (
+  SELECT
+    *,
+  -- row per order_id
+    ROW_NUMBER() OVER(PARTITION BY order_id) AS rn_number
+  -- total payment per order_id
+    , SUM(payment_value) OVER(PARTITION BY order_id) AS total_pay
+  FROM
+    `e-tensor-411113.Olist.olist_order_payments`)
+SELECT
+  order_id,
+  payment_sequential,
+  payment_type,
+  payment_installments,
+  payment_value,
+  rn_number,
+  total_pay
+FROM
+  rn_delete
+  -- Since there can be more than one payment per order_id, you also need to check if the payment_value is equal to total_pay. If it isn't, it's just an installment, if it is, the entry is repeated.
+WHERE rn_number = 2 AND payment_value = total_pay
+ORDER BY order_id
